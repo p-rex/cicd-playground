@@ -1,4 +1,4 @@
-name: FCS CLI Image Scan on PR
+name: FCS CLI IaC Scan on PR
 
 on:
   pull_request:
@@ -6,11 +6,17 @@ on:
       - main
     paths:
       - 'Dockerfile'
-      - 'html/**'
+      - 'terraform/**'
+      - 'cloudformation/**'
+      - 'k8s/**'
+      - '*.yaml'
+      - '*.yml'
+      - '*.tf'
+      - '*.json'
 
 jobs:
-  build-and-scan:
-    name: Build Docker Image and Scan with FCS CLI
+  iac-scan:
+    name: IaC Scan with FCS CLI
     runs-on: ubuntu-latest
 
     steps:
@@ -18,12 +24,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # 2. Docker イメージをビルド
-      - name: Build Docker image
-        run: |
-          docker build -t cicd-playground:pr-${{ github.event.pull_request.number }} .
-
-      # 3. FCS CLI をダウンロード
+      # 2. FCS CLI をダウンロード
       - name: Download FCS CLI
         env:
           FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
@@ -32,63 +33,71 @@ jobs:
         run: |
           # 認証トークンを取得
           echo "=== Getting auth token ==="
-          TOKEN_RESPONSE=$(curl --silent --request POST \
+          FALCON_ACCESS_TOKEN=$(curl --silent --request POST \
             --header "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "client_id=${FALCON_CLIENT_ID}" \
             --data-urlencode "client_secret=${FALCON_CLIENT_SECRET}" \
-            --url "${FALCON_API_URL}/oauth2/token")
-          echo "Token response: $(echo $TOKEN_RESPONSE | jq -r '.token_type // "check response"')"
-          FALCON_ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.access_token')
+            --url "${FALCON_API_URL}/oauth2/token" | jq -r '.access_token')
+          echo "Token acquired: $([ -n "$FALCON_ACCESS_TOKEN" ] && echo 'yes' || echo 'no')"
 
-          # Linux x86_64 向け FCS CLI の最新バージョンを検索
+          # Linux x86_64 向け FCS CLI の最新バージョンを取得
           echo "=== Querying available FCS CLI versions ==="
           API_RESPONSE=$(curl --silent --get \
             --header 'accept: application/json' \
             --header "Authorization: Bearer ${FALCON_ACCESS_TOKEN}" \
             --url "${FALCON_API_URL}/csdownloads/combined/files-download/v2" \
             --data-urlencode 'filter=category:"fcs"+os:"linux"+arch:"amd64"')
-          echo "Available files: $(echo $API_RESPONSE | jq -r '.resources[] | .file_name' 2>/dev/null || echo 'none found')"
+          echo "Available files:"
+          echo $API_RESPONSE | jq -r '.resources[] | "\(.file_version)\t\(.file_name)"' 2>/dev/null
 
           # 最新バージョン（最後のエントリ）を取得
           DOWNLOAD_URL=$(echo $API_RESPONSE | jq -r '.resources[-1].download_info.download_url')
           FILE_NAME=$(echo $API_RESPONSE | jq -r '.resources[-1].file_name')
-          echo "Downloading: ${FILE_NAME} from ${DOWNLOAD_URL}"
+          echo "Downloading: ${FILE_NAME}"
 
           curl --silent --location --output fcs.tar.gz "${DOWNLOAD_URL}"
-          echo "Downloaded file size: $(ls -lh fcs.tar.gz)"
+          echo "Downloaded: $(ls -lh fcs.tar.gz | awk '{print $5}')"
 
-          # tar.gz を展開してバイナリを確認
+          # tar.gz を展開してバイナリをインストール
           tar -xzf fcs.tar.gz
-          echo "Extracted files:"
-          ls -la
-
-          # fcs バイナリを PATH に配置
           chmod u+x fcs
           sudo mv fcs /usr/local/bin/fcs
-          echo "FCS CLI version:"
-          fcs --version
+          echo "FCS CLI installed:"
+          fcs version
 
-      # 4. FCS CLI でイメージをスキャン
-      - name: Scan Docker image with FCS CLI
+      # 3. FCS CLI で IaC スキャン実行
+      - name: Scan IaC with FCS CLI
         env:
           FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
           FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
           FALCON_CLOUD: ${{ secrets.FALCON_CLOUD }}
         run: |
-          fcs scan image cicd-playground:pr-${{ github.event.pull_request.number }} \
+          echo "=== Starting IaC scan ==="
+          # リポジトリ全体をスキャン（カレントディレクトリ）
+          fcs iac scan \
             --client-id "${FALCON_CLIENT_ID}" \
             --client-secret "${FALCON_CLIENT_SECRET}" \
-            --falcon-cloud "${FALCON_CLOUD}" \
-            --format json \
-            --output /tmp/fcs-scan-report.json \
-            --minimum-severity medium
-          echo "Scan exit code: $?"
+            --falcon-region "${FALCON_CLOUD}" \
+            -p . \
+            --upload-results || SCAN_EXIT=$?
 
-      # 5. スキャン結果をアーティファクトとして保存
-      - name: Upload scan report as artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fcs-scan-report-pr-${{ github.event.pull_request.number }}
-          path: /tmp/fcs-scan-report.json
-          retention-days: 30
+          SCAN_EXIT=${SCAN_EXIT:-0}
+          echo "Scan exit code: ${SCAN_EXIT}"
+
+          # exit code の意味:
+          # 0: 問題なし
+          # 1: 問題あり（ブロック推奨）
+          # 2: 問題あり（アラート推奨）
+          if [ "${SCAN_EXIT}" -eq 0 ]; then
+            echo "✅ IaC scan passed - no issues found"
+          elif [ "${SCAN_EXIT}" -eq 1 ]; then
+            echo "❌ IaC scan failed - blocking issues found"
+            exit 1
+          elif [ "${SCAN_EXIT}" -eq 2 ]; then
+            echo "⚠️  IaC scan warning - issues found (alert level)"
+            # warningはブロックしない場合はexitしない
+            # exit 0
+          else
+            echo "IaC scan completed with exit code: ${SCAN_EXIT}"
+          fi
+
