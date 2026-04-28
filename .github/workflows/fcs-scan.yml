@@ -1,0 +1,76 @@
+name: FCS CLI Image Scan on PR
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'html/**'
+
+jobs:
+  build-and-scan:
+    name: Build Docker Image and Scan with FCS CLI
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. ソースコードをチェックアウト
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Docker イメージをビルド
+      - name: Build Docker image
+        run: |
+          docker build -t cicd-playground:pr-${{ github.event.pull_request.number }} .
+
+      # 3. FCS CLI をダウンロード
+      - name: Download FCS CLI
+        env:
+          FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+          FALCON_API_URL: ${{ secrets.FALCON_API_URL }}
+        run: |
+          # 認証トークンを取得
+          FALCON_ACCESS_TOKEN=$(curl --silent --request POST \
+            --header "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "client_id=${FALCON_CLIENT_ID}" \
+            --data-urlencode "client_secret=${FALCON_CLIENT_SECRET}" \
+            --url "${FALCON_API_URL}/oauth2/token" | jq -r '.access_token')
+
+          # Linux x86_64 向け FCS CLI の最新バージョンをダウンロード
+          DOWNLOAD_URL=$(curl --silent --get \
+            --header 'accept: application/json' \
+            --header "Authorization: Bearer ${FALCON_ACCESS_TOKEN}" \
+            --url "${FALCON_API_URL}/csdownloads/combined/files-download/v2" \
+            --data-urlencode 'filter=category:"fcs"+os:"linux"+arch:"amd64"' \
+            | jq -r '.resources[0].download_info.download_url')
+
+          curl --silent --location --output fcs.tar.gz "${DOWNLOAD_URL}"
+          tar -xzf fcs.tar.gz
+          chmod u+x fcs
+          sudo mv fcs /usr/local/bin/fcs
+
+      # 4. FCS CLI でイメージをスキャン
+      - name: Scan Docker image with FCS CLI
+        env:
+          FALCON_CLIENT_ID: ${{ secrets.FALCON_CLIENT_ID }}
+          FALCON_CLIENT_SECRET: ${{ secrets.FALCON_CLIENT_SECRET }}
+          FALCON_CLOUD: ${{ secrets.FALCON_CLOUD }}
+        run: |
+          fcs scan image cicd-playground:pr-${{ github.event.pull_request.number }} \
+            --client-id "${FALCON_CLIENT_ID}" \
+            --client-secret "${FALCON_CLIENT_SECRET}" \
+            --falcon-cloud "${FALCON_CLOUD}" \
+            --format json \
+            --output /tmp/fcs-scan-report.json \
+            --minimum-severity medium
+          echo "Scan exit code: $?"
+
+      # 5. スキャン結果をアーティファクトとして保存
+      - name: Upload scan report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fcs-scan-report-pr-${{ github.event.pull_request.number }}
+          path: /tmp/fcs-scan-report.json
+          retention-days: 30
