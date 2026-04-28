@@ -49,8 +49,9 @@ jobs:
             --data-urlencode 'filter=category:"fcs"+os:"linux"+arch:"amd64"')
           echo "Available files: $(echo $API_RESPONSE | jq -r '.resources[] | .file_name' 2>/dev/null || echo 'none found')"
 
-          DOWNLOAD_URL=$(echo $API_RESPONSE | jq -r '.resources[0].download_info.download_url')
-          FILE_NAME=$(echo $API_RESPONSE | jq -r '.resources[0].file_name')
+          # 最新バージョン（最後のエントリ）を取得
+          DOWNLOAD_URL=$(echo $API_RESPONSE | jq -r '.resources[-1].download_info.download_url')
+          FILE_NAME=$(echo $API_RESPONSE | jq -r '.resources[-1].file_name')
           echo "Downloading: ${FILE_NAME} from ${DOWNLOAD_URL}"
 
           curl --silent --location --output fcs.tar.gz "${DOWNLOAD_URL}"
