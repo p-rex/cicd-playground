@@ -31,24 +31,41 @@ jobs:
           FALCON_API_URL: ${{ secrets.FALCON_API_URL }}
         run: |
           # 認証トークンを取得
-          FALCON_ACCESS_TOKEN=$(curl --silent --request POST \
+          echo "=== Getting auth token ==="
+          TOKEN_RESPONSE=$(curl --silent --request POST \
             --header "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "client_id=${FALCON_CLIENT_ID}" \
             --data-urlencode "client_secret=${FALCON_CLIENT_SECRET}" \
-            --url "${FALCON_API_URL}/oauth2/token" | jq -r '.access_token')
+            --url "${FALCON_API_URL}/oauth2/token")
+          echo "Token response: $(echo $TOKEN_RESPONSE | jq -r '.token_type // "check response"')"
+          FALCON_ACCESS_TOKEN=$(echo $TOKEN_RESPONSE | jq -r '.access_token')
 
-          # Linux x86_64 向け FCS CLI の最新バージョンをダウンロード
-          DOWNLOAD_URL=$(curl --silent --get \
+          # Linux x86_64 向け FCS CLI の最新バージョンを検索
+          echo "=== Querying available FCS CLI versions ==="
+          API_RESPONSE=$(curl --silent --get \
             --header 'accept: application/json' \
             --header "Authorization: Bearer ${FALCON_ACCESS_TOKEN}" \
             --url "${FALCON_API_URL}/csdownloads/combined/files-download/v2" \
-            --data-urlencode 'filter=category:"fcs"+os:"linux"+arch:"amd64"' \
-            | jq -r '.resources[0].download_info.download_url')
+            --data-urlencode 'filter=category:"fcs"+os:"linux"+arch:"amd64"')
+          echo "Available files: $(echo $API_RESPONSE | jq -r '.resources[] | .file_name' 2>/dev/null || echo 'none found')"
+
+          DOWNLOAD_URL=$(echo $API_RESPONSE | jq -r '.resources[0].download_info.download_url')
+          FILE_NAME=$(echo $API_RESPONSE | jq -r '.resources[0].file_name')
+          echo "Downloading: ${FILE_NAME} from ${DOWNLOAD_URL}"
 
           curl --silent --location --output fcs.tar.gz "${DOWNLOAD_URL}"
+          echo "Downloaded file size: $(ls -lh fcs.tar.gz)"
+
+          # tar.gz を展開してバイナリを確認
           tar -xzf fcs.tar.gz
+          echo "Extracted files:"
+          ls -la
+
+          # fcs バイナリを PATH に配置
           chmod u+x fcs
           sudo mv fcs /usr/local/bin/fcs
+          echo "FCS CLI version:"
+          fcs --version
 
       # 4. FCS CLI でイメージをスキャン
       - name: Scan Docker image with FCS CLI
