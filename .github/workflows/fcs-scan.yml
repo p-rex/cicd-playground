@@ -64,12 +64,15 @@ jobs:
           FALCON_CLOUD: ${{ secrets.FALCON_CLOUD }}
         run: |
           echo "=== Starting IaC scan ==="
+          # リポジトリ名をプロジェクト名として使用
+          REPO_NAME="${{ github.repository }}"
           # リポジトリ全体をスキャン（カレントディレクトリ）
           fcs iac scan \
             --client-id "${FALCON_CLIENT_ID}" \
             --client-secret "${FALCON_CLIENT_SECRET}" \
             --falcon-region "${FALCON_CLOUD}" \
-            -p . \
+            -p "${GITHUB_WORKSPACE}" \
+            --project-name "${REPO_NAME}" \
             --upload-results || SCAN_EXIT=$?
 
           SCAN_EXIT=${SCAN_EXIT:-0}
