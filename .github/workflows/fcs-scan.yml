@@ -62,8 +62,8 @@ jobs:
           tar -xzf fcs.tar.gz
           chmod u+x fcs
           sudo mv fcs /usr/local/bin/fcs
-          echo "FCS CLI installed:"
-          fcs version
+          echo "FCS CLI installed at: $(which fcs)"
+          fcs --help | head -5 || true
 
       # 3. FCS CLI で IaC スキャン実行
       - name: Scan IaC with FCS CLI
